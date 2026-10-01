@@ -1,0 +1,43 @@
+[project]
+name = "apda"
+version = "0.1.0"
+description = "Atmospheric Precorrected Differential Absorption (APDA) water vapour retrieval from hyperspectral imagery"
+readme = "README.md"
+requires-python = ">= 3.10"
+authors = [{name = "HYGEOS", email = "contact@hygeos.com"}]
+dependencies = [
+    "core @ git+https://github.com/hygeos/core",
+    "xarray",
+    "numpy",
+    "scipy",
+    "h5netcdf",
+    "matplotlib",  # imported by `core` at import time but not declared by it
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["apda*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tool.pixi.dependencies]
+xarray = "*"
+numpy = "*"
+scipy = "*"
+h5netcdf = "*"
+matplotlib-base = "*"
+pytest = "*"
+
+[tool.pixi.pypi-dependencies]
+apda = { path = ".", editable = true }
+
+[tool.pixi.tasks]
+tests = "pytest tests/"
