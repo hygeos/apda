@@ -27,23 +27,61 @@ pixi run tests
 
 ## Usage
 
+The input is a **scene**: an `xr.Dataset` describing either an image or a set
+of simulations.
+
+| Variable | Dims | Units |
+|---|---|---|
+| `rho_toa` | `(..., wavelength)` | TOA reflectance; wavelength in the LUT unit (µm) |
+| `sza`, `vza` | scalar or a subset of the spatial dims | degrees |
+| `raa`, or `saa` + `vaa` | same | degrees, any range (folded into [0, 180]) |
+| `aot` | same | — |
+| `wv_init` *(optional)* | same | first-guess PW, g/cm² (default 2.0) |
+| `valid` *(optional)* | same | bool, `False` → NaN |
+
+The spatial dims are whatever `rho_toa` has besides `wavelength`: `(y, x)` for
+an image, `(simulation_config, ...)` for simulations. Other variables,
+coordinates and attributes are ignored; angles whose `units` attribute says
+radians are rejected.
+
 ```python
-from apda import APDALUT, retrieve_scene, select_channels
+import xarray as xr
+from apda import APDALUT, retrieve
 
 lut = APDALUT("lut_get_h2o.nc")
 lut.validate()
 
-# toa: xr.DataArray of TOA reflectance with a `wavelength` dim (µm, same unit
-#      as the LUT) plus any spatial dims, e.g. (y, x, wavelength).
-# sza, vza, raa, aot: scalars or DataArrays over the spatial dims
-#      (raa in [0, 180] deg, LUT convention).
-pw = retrieve_scene(lut, select_channels("910"), toa,
-                    sza=sza, vza=vza, raa=raa, aot=aot, rho=0.5)
-# → water_vapour_column (g/cm²) over the spatial dims
+scene = xr.Dataset({"rho_toa": toa, "sza": sza, "vza": vza,
+                    "saa": saa, "vaa": vaa, "aot": 0.15})
+pw = retrieve(lut, scene, "910", rho=0.5)
+# → water_vapour_column (g/cm²) over the spatial dims, with the scene's coords
 ```
 
-`retrieve_scene` snaps each pixel to its nearest LUT geometry node and fits
-one model per distinct node. For a single geometry, the building blocks are:
+`retrieve` linearly interpolates the LUT at each pixel's geometry, rounded to
+`apda.scene.GEOMETRY_STEP` (0.1° for `sza`/`vza`, 1° for `raa`, 0.01 for
+`aot`), and fits one model per distinct value. Geometry outside the LUT range
+is clamped to it with a warning; NaN geometry gives NaN. See
+`examples/hyps_demo.py` for a complete run on the HYPS dataset.
+
+### Choosing `rho`
+
+The ratio → water-vapour model is fitted on LUT spectra simulated over a flat
+surface of reflectance `rho` (a LUT node: 0.3, 0.5 or 1.0 for HYPS). It is an
+algorithm setting, the same for every pixel, so pass it explicitly. All
+validation figures use `rho=0.5`. Without it, the first non-zero LUT node is
+used.
+
+The choice matters little. On HYPS (median of per-surface median errors),
+even picking the best `rho` for each surface in hindsight gains about one
+point at 910 nm and almost nothing at 1100 nm, where the error comes from the
+surface's spectral shape, not its brightness:
+
+| Band | `rho=0.5` | best `rho` per surface |
+|---|---|---|
+| 910 nm | 4.3% | 3.2% |
+| 1100 nm | 8.9% | 8.4% |
+
+For a single geometry, the building blocks are:
 
 ```python
 from apda import APDA
@@ -73,7 +111,9 @@ fall on the same band.
 | `APDALUT` | Load / validate a LUT; `select_geometry`, `collapse` |
 | `select_channels`, `ChannelSet` | Measurement/reference channel sets (`"910"`, `"1100"`) |
 | `APDA` | Single-geometry retriever: `fit`, `compute_ratio`, `retrieve`, `optimize_path_radiance` |
-| `retrieve_scene` | Image retrieval with per-pixel geometry |
+| `retrieve` | Retrieval over a scene Dataset (image or simulations), per-pixel geometry |
+| `scene_geometry` | The `sza, vza, raa, aot` `retrieve` reads from a scene |
+| `retrieve_scene` | *Deprecated*: `retrieve` with geometry as separate arguments |
 | `compute_apda_ratio` | APDA ratio (Eq. 6) |
 | `fit_exponential`, `convert_ratio_to_pw` | Ratio ↔ PW model `R = exp(-(c + a·PW^b))` (Eqs. 14–15) |
 

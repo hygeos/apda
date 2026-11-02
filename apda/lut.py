@@ -9,6 +9,7 @@ space** (dimensionless) with variables ``rho_atm`` (path reflectance) and
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +34,31 @@ GEOMETRY_DIMS: tuple[str, ...] = ("sza", "vza", "raa", "aot")
 #: Max distance between a requested wavelength and the nearest available
 #: band, in wavelength-coordinate units (µm for HYPS).
 WL_TOLERANCE: float = 0.01
+
+#: Values outside a LUT axis by more than this fraction of its span trigger
+#: a clamping warning (absorbs float round-off at the edges).
+RANGE_RTOL: float = 1e-6
+
+
+def clip_to_range(val, lo: float, hi: float, name: str):
+    """Clip ``val`` (scalar, ndarray or DataArray) to ``[lo, hi]``.
+
+    Warns (``UserWarning``) when finite values lie outside the range, e.g.
+    radians instead of degrees, ``raa`` in [0, 360) or out-of-LUT PW. NaN
+    passes through unchanged.
+    """
+    tol = RANGE_RTOL * (hi - lo)
+    arr = np.asarray(val, dtype=float)
+    n_out = int(np.count_nonzero((arr < lo - tol) | (arr > hi + tol)))
+    if n_out:
+        warnings.warn(
+            f"{n_out} '{name}' value(s) outside the LUT range [{lo:g}, {hi:g}] "
+            f"(e.g. {arr[(arr < lo - tol) | (arr > hi + tol)].flat[0]:g}); clamped.",
+            UserWarning, stacklevel=3,
+        )
+    if isinstance(val, xr.DataArray):
+        return val.clip(lo, hi)
+    return np.clip(arr, lo, hi) if arr.ndim else float(np.clip(arr, lo, hi))
 
 
 def select_wavelengths(obj, wavelengths) -> xr.Dataset | xr.DataArray:
@@ -106,36 +132,26 @@ class APDALUT:
         vza: float | xr.DataArray,
         raa: float | xr.DataArray,
         aot: float | xr.DataArray,
-        method: str = "nearest",
     ) -> xr.Dataset:
-        """Collapse the geometry dimensions.
+        """Collapse the geometry dimensions by linear interpolation in the LUT.
 
         Parameters
         ----------
         sza, vza, raa, aot : float or xr.DataArray
             Geometry. Scalars give a single-geometry LUT; DataArrays (e.g.
             dims ``(y, x)``) give a per-pixel LUT with those dims added.
-            Values are clamped to the LUT range.
-        method : {"nearest", "linear"}, default "nearest"
-            ``"nearest"`` is exact when the geometry lies on the LUT grid;
-            ``"linear"`` interpolates between nodes.
+            Values outside the LUT range are clamped to it, with a warning.
 
         Returns
         -------
         xr.Dataset
-            LUT without the geometry dims.
+            LUT without the geometry dims (exact LUT values on nodes).
         """
-        if method not in ("nearest", "linear"):
-            raise ValueError(f"Unknown geometry method '{method}'. Use 'nearest' or 'linear'.")
-
         geom = {}
         for name, val in zip(GEOMETRY_DIMS, (sza, vza, raa, aot)):
             lo, hi = float(self.ds[name].min()), float(self.ds[name].max())
-            geom[name] = val.clip(lo, hi) if isinstance(val, xr.DataArray) else float(np.clip(val, lo, hi))
-
-        if method == "nearest" and not any(isinstance(v, xr.DataArray) for v in geom.values()):
-            return self.ds.sel(geom, method="nearest")
-        return self.ds.interp(geom, method=method)
+            geom[name] = clip_to_range(val, lo, hi, name)
+        return self.ds.interp(geom, method="linear")
 
     def collapse(
         self,
@@ -145,7 +161,6 @@ class APDALUT:
         aot: float | xr.DataArray,
         channels: ChannelSet,
         rho: float | None = None,
-        geom_method: str = "nearest",
     ) -> xr.Dataset:
         """Collapse geometry, keep only ``channels``, optionally pick a ``rho`` node.
 
@@ -158,8 +173,6 @@ class APDALUT:
         rho : float, optional
             Surface-reflectance node used to fit the model (nearest LUT
             value). If None, :meth:`APDA.fit` uses the first non-zero node.
-        geom_method : {"nearest", "linear"}, default "nearest"
-            Geometry interpolation (see :meth:`select_geometry`).
 
         Returns
         -------
@@ -167,7 +180,7 @@ class APDALUT:
             Compact LUT with dims ``(WV, wavelength)``, the input of
             :class:`apda.APDA`.
         """
-        ds = self.select_geometry(sza, vza, raa, aot, method=geom_method)
+        ds = self.select_geometry(sza, vza, raa, aot)
         ds = select_wavelengths(ds, channels.all)
         if rho is not None:
             ds = ds.sel(rho=rho, method="nearest")

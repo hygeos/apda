@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from apda import APDA, APDALUT, retrieve_scene, select_channels
+from apda import APDA, APDALUT, retrieve, select_channels
 
 
 LUT_PATH = os.environ.get("APDA_LUT_PATH", "")
@@ -61,19 +61,17 @@ def toa_dataset():
 
 @pytest.fixture(scope="module")
 def scene(toa_dataset):
-    """First surface spectrum as a scene, per-config geometry, truth WV."""
+    """First surface spectrum as an :func:`apda.retrieve` scene, and truth WV."""
     ds = toa_dataset
-    toa = (ds["toa_reflectance"].isel(spectrum_type=0)
-           .rename({"toa_lambda0": "wavelength"}))
-    dphi = np.abs(ds["modtran_sun_azimuth"] - ds["modtran_view_azimuth"]) % 360
-    geometry = {
+    scene = xr.Dataset({
+        "rho_toa": ds["toa_reflectance"].isel(spectrum_type=0).rename(toa_lambda0="wavelength"),
         "sza": ds["modtran_sun_zenith"],
         "vza": ds["modtran_view_zenith"],
-        "raa": np.minimum(dphi, 360 - dphi),
+        "saa": ds["modtran_sun_azimuth"],
+        "vaa": ds["modtran_view_azimuth"],
         "aot": ds["modtran_aot"],
-    }
-    wv_true = ds["modtran_water_vapor"].values * 0.1
-    return toa, geometry, wv_true
+    })
+    return scene, ds["modtran_water_vapor"].values * 0.1
 
 
 # ---------------------------------------------------------------------------
@@ -112,11 +110,10 @@ class TestRetrieval:
     """Test WV retrieval and validation against ground truth."""
 
     @pytest.mark.parametrize("band", ["910", "1100"])
-    def test_retrieve_scene(self, lut_wrapper, scene, band):
+    def test_retrieve(self, lut_wrapper, scene, band):
         """Per-geometry retrieval over all configs is within tolerance."""
-        toa, geometry, wv_true = scene
-        pw = retrieve_scene(lut_wrapper, select_channels(band), toa,
-                            **geometry, rho=0.5, n_iter=2)
+        scene, wv_true = scene
+        pw = retrieve(lut_wrapper, scene, band, rho=0.5, n_iter=2)
         est = pw.values
 
         valid = np.isfinite(est) & (wv_true > 0)

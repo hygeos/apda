@@ -25,7 +25,7 @@ from core import log
 
 from apda.bands import ChannelSet
 from apda.conversion import convert_ratio_to_pw, fit_exponential
-from apda.lut import PW_DIM, select_wavelengths
+from apda.lut import PW_DIM, clip_to_range, select_wavelengths
 from apda.path_radiance import compute_g_weights, scale_path_radiance
 from apda.ratio import LIR_METHODS, compute_apda_ratio
 
@@ -86,10 +86,10 @@ class APDA:
         wavelengths: np.ndarray,
         rho_atm: xr.DataArray | None = None,
     ) -> xr.DataArray:
-        """rho_atm at ``wavelengths``, linearly interpolated to ``pw`` (clamped)."""
+        """rho_atm at ``wavelengths``, linearly interpolated to ``pw`` (clamped, with a warning)."""
         var = select_wavelengths(self._lut["rho_atm"] if rho_atm is None else rho_atm, wavelengths)
         lo, hi = float(var[PW_DIM].min()), float(var[PW_DIM].max())
-        pw = pw.clip(lo, hi) if isinstance(pw, xr.DataArray) else float(np.clip(pw, lo, hi))
+        pw = clip_to_range(pw, lo, hi, PW_DIM)
         return var.interp({PW_DIM: pw})
 
     def fit(self) -> dict[str, float]:
@@ -102,6 +102,7 @@ class APDA:
         dict[str, float]
             ``{"a": …, "b": …, "c": …}`` — also stored in :attr:`fit_params`.
         """
+        self.fit_params = {}  # never keep a previous model if this fit fails
         wl = np.r_[self._meas_wl, self._ref_wl]
         rho_toa = select_wavelengths(self._lut["rho_toa"], wl)
         if "rho" in rho_toa.dims:
@@ -180,7 +181,7 @@ class APDA:
         pw_initial : float or xr.DataArray, default 2.0
             First-guess PW (g/cm²).
         n_iter : int, default 2
-            Number of iterations.
+            Number of iterations (≥ 1).
         alpha : float, optional
             Apply the Eq. 17 path-reflectance scaling with this α.
         valid_mask : xr.DataArray, optional
@@ -193,6 +194,8 @@ class APDA:
         """
         if not self.fit_params:
             raise RuntimeError("Call fit() before retrieve().")
+        if n_iter < 1:
+            raise ValueError(f"n_iter must be >= 1, got {n_iter}.")
 
         rho_atm = None
         if alpha is not None:

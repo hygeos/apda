@@ -18,7 +18,9 @@ from apda import (
     compute_apda_ratio,
     convert_ratio_to_pw,
     fit_exponential,
+    retrieve,
     retrieve_scene,
+    scene_geometry,
     select_channels,
 )
 from apda.bands import CURATED_BANDS
@@ -159,7 +161,8 @@ class TestConversion:
 
     def test_edge_cases(self):
         assert convert_ratio_to_pw(np.exp(-C), A, B, C) == pytest.approx(0.0)
-        assert np.isnan(convert_ratio_to_pw(1.0, A, B, C))   # R > exp(-c): unphysical
+        assert convert_ratio_to_pw(1.0, A, B, C) == 0.0      # exp(-c) < R <= 1: dry pixel
+        assert np.isnan(convert_ratio_to_pw(1.1, A, B, C))   # R > 1: unphysical
         assert np.isinf(convert_ratio_to_pw(0.0, A, B, C))
         assert np.isnan(convert_ratio_to_pw(-0.1, A, B, C))
 
@@ -237,10 +240,15 @@ class TestAPDALUT:
 
     def test_select_geometry_per_pixel_clamps(self, lut_path):
         sza = xr.DataArray([[10.0, 90.0]], dims=("y", "x"))  # outside [22, 76]
-        for method in ("nearest", "linear"):
-            ds = APDALUT(lut_path()).select_geometry(sza, 0.0, 90.0, 0.15, method=method)
-            assert {"y", "x"} <= set(ds["rho_atm"].dims)
-            assert np.isfinite(ds["rho_atm"]).all()
+        with pytest.warns(UserWarning, match="2 'sza' value"):
+            ds = APDALUT(lut_path()).select_geometry(sza, 0.0, 90.0, 0.15)
+        assert {"y", "x"} <= set(ds["rho_atm"].dims)
+        assert np.isfinite(ds["rho_atm"]).all()
+
+    def test_select_geometry_interpolates(self, tmp_path):
+        lut = APDALUT(write_sza_lut(tmp_path))
+        atm = lut.select_geometry(33.0, 0.0, 90.0, 0.15)["rho_atm"]
+        np.testing.assert_allclose(atm, sza_rho_atm(33.0))
 
     def test_collapse(self, lut_path):
         ds = APDALUT(lut_path()).collapse(44.0, 0.0, 90.0, 0.15, CHANNELS, rho=RHO_SURF)
@@ -345,19 +353,104 @@ class TestAPDA:
 # scene.py
 # ---------------------------------------------------------------------------
 
-class TestRetrieveScene:
+def toy_scene(pw_true, **variables) -> xr.Dataset:
+    """:func:`retrieve` scene over (y, x): toy spectra + default on-node geometry."""
+    geometry = {"sza": 44.0, "vza": 0.0, "raa": 90.0, "aot": 0.15}
+    return xr.Dataset({"rho_toa": toy_toa(pw_true), **geometry, **variables})
+
+
+def sza_rho_atm(sza):
+    """Path reflectance of the sza-dependent toy LUT: linear in sza, 0.05 at 44°."""
+    return 0.05 * sza / 44.0
+
+
+def write_sza_lut(tmp_path):
+    """Toy LUT whose path reflectance depends on sza, so geometry matters."""
+    ds = make_toy_lut()
+    atm = ds["rho_atm"] * sza_rho_atm(ds["sza"]) / 0.05
+    ds = ds.assign(rho_toa=ds["rho_toa"] - ds["rho_atm"] + atm, rho_atm=atm)
+    path = tmp_path / "sza_lut.nc"
+    ds.to_netcdf(path)
+    return path
+
+
+class TestRetrieve:
     def test_per_pixel_geometry(self, lut_path):
         pw_true = [[1.0, 2.0, 3.0], [1.5, 2.5, 4.0]]
-        # Off-node angles snap to the nearest LUT node (22/44/76 deg).
         sza = xr.DataArray([[20.0, 45.0, 75.0], [21.0, 43.0, 77.0]], dims=("y", "x"))
-        pw = retrieve_scene(APDALUT(lut_path()), CHANNELS, toy_toa(pw_true),
-                            sza=sza, vza=0.0, raa=90.0, aot=0.15, rho=RHO_SURF)
+        with pytest.warns(UserWarning, match="3 'sza' value"):  # 20, 21, 77 outside [22, 76]
+            pw = retrieve(APDALUT(lut_path()), toy_scene(pw_true, sza=sza), CHANNELS, rho=RHO_SURF)
         assert pw.dims == ("y", "x")
-        assert pw.attrs["n_geometry_nodes"] == 3
+        assert pw.name == "water_vapour_column"
+        assert pw.attrs["n_geometry_nodes"] == 5  # 22 (twice, clamped), 43, 45, 75, 76
         np.testing.assert_allclose(pw.values, pw_true, rtol=1e-2)
 
+    def test_off_node_geometry_is_interpolated(self, tmp_path):
+        """Pixels between LUT nodes see the interpolated path reflectance, not the nearest node's."""
+        sza = np.array([[30.0, 33.0, 60.0]])
+        toa = xr.concat([toy_toa([[2.0]], rho_atm=float(sza_rho_atm(s))).isel(x=0) for s in sza[0]], "x")
+        scene = xr.Dataset({"rho_toa": toa.transpose("y", "x", "wavelength"),
+                            "sza": (("y", "x"), sza), "vza": 0.0, "raa": 90.0, "aot": 0.15})
+        pw = retrieve(APDALUT(write_sza_lut(tmp_path)), scene, CHANNELS, rho=RHO_SURF)
+        np.testing.assert_allclose(pw.values, 2.0, rtol=1e-3)
+
+    def test_geometry_binning(self, lut_path):
+        """Geometry is rounded to GEOMETRY_STEP: close values share one fit."""
+        sza = xr.DataArray([[33.0, 33.02, 33.3]], dims=("y", "x"))  # 33.0, 33.0, 33.3
+        pw = retrieve(APDALUT(lut_path()), toy_scene([[2.0, 2.0, 2.0]], sza=sza), CHANNELS, rho=RHO_SURF)
+        assert pw.attrs["n_geometry_nodes"] == 2
+
+    def test_band_name(self, lut_path):
+        """A band name selects the curated channel set."""
+        with pytest.raises(ValueError, match="not covered"):  # toy LUT lacks 910-band channels
+            retrieve(APDALUT(lut_path()), toy_scene([[2.0]]), "910")
+
+    def test_saa_vaa_give_folded_raa(self, lut_path):
+        """saa/vaa in any range give the same result as the folded raa."""
+        lut = APDALUT(lut_path())
+        ref = retrieve(lut, toy_scene([[2.0]]), CHANNELS, rho=RHO_SURF)
+        scene = toy_scene([[2.0]]).drop_vars("raa").assign(saa=300.0, vaa=30.0)  # |Δ| = 270 → 90
+        xr.testing.assert_allclose(retrieve(lut, scene, CHANNELS, rho=RHO_SURF), ref)
+        assert scene_geometry(scene)["raa"] == 90.0
+
+    def test_raa_folded(self):
+        assert scene_geometry(toy_scene([[2.0]], raa=270.0))["raa"] == 90.0
+
+    def test_keeps_spatial_coords(self, lut_path):
+        scene = toy_scene([[1.0, 2.0]]).assign_coords(x=[10.5, 11.5], lat=("x", [43.0, 43.1]))
+        pw = retrieve(APDALUT(lut_path()), scene, CHANNELS, rho=RHO_SURF)
+        assert pw["x"].values.tolist() == [10.5, 11.5]
+        assert "lat" in pw.coords
+
+    def test_optional_wv_init_and_valid(self, lut_path):
+        scene = toy_scene([[1.0, 2.0]], wv_init=3.0,
+                          valid=xr.DataArray([[True, False]], dims=("y", "x")))
+        pw = retrieve(APDALUT(lut_path()), scene, CHANNELS, rho=RHO_SURF)
+        assert pw.values[0, 0] == pytest.approx(1.0, rel=1e-2)
+        assert np.isnan(pw.values[0, 1])
+
+    @pytest.mark.parametrize("drop, match", [
+        ("rho_toa", "rho_toa"), ("raa", "'raa', or 'saa' and 'vaa'"), ("aot", "aot"),
+    ])
+    def test_missing_variable_raises(self, lut_path, drop, match):
+        with pytest.raises(ValueError, match=match):
+            retrieve(APDALUT(lut_path()), toy_scene([[2.0]]).drop_vars(drop), CHANNELS)
+
+    def test_radians_raise(self, lut_path):
+        scene = toy_scene([[2.0]])
+        scene["sza"].attrs["units"] = "rad"
+        with pytest.raises(ValueError, match="radians"):
+            retrieve(APDALUT(lut_path()), scene, CHANNELS)
+
     def test_geometry_dim_not_in_image_raises(self, lut_path):
-        sza = xr.DataArray([22.0, 44.0], dims="t")
+        scene = toy_scene([[2.0]], sza=xr.DataArray([22.0, 44.0], dims="t"))
         with pytest.raises(ValueError, match="not present in the image"):
-            retrieve_scene(APDALUT(lut_path()), CHANNELS, toy_toa([[2.0]]),
-                           sza=sza, vza=0.0, raa=90.0, aot=0.15)
+            retrieve(APDALUT(lut_path()), scene, CHANNELS)
+
+
+def test_retrieve_scene_deprecated(lut_path):
+    """The keyword-geometry API still works, with a DeprecationWarning."""
+    with pytest.deprecated_call():
+        pw = retrieve_scene(APDALUT(lut_path()), CHANNELS, toy_toa([[2.0]]),
+                            sza=44.0, vza=0.0, raa=90.0, aot=0.15, rho=RHO_SURF)
+    assert pw.values[0, 0] == pytest.approx(2.0, rel=1e-2)

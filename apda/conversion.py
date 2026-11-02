@@ -46,7 +46,9 @@ def convert_ratio_to_pw(
 
         - R = 1.0  → no absorption  → PW = 0 when c = 0
         - R → 0    → full absorption → PW → +∞
-        - R > 1    → unphysical (noise / path-radiance error) → NaN
+        - exp(-c) < R ≤ 1 (only when c > 0) → below the model's PW = 0
+          ratio (dry pixel / noise) → PW = 0
+        - R > max(1, exp(-c)) → unphysical (noise / path-radiance error) → NaN
         - R ≤ 0    → undefined; R = 0 returns +∞, R < 0 returns NaN
 
     a : float
@@ -82,7 +84,9 @@ def convert_ratio_to_pw(
     valid = inner >= 0.0
     result[np.where(pos)[0][valid]] = inner[valid] ** (1.0 / b)
 
-    # inner < 0  →  R > exp(-c), unphysical → stays NaN
+    # inner < 0  →  R > exp(-c): PW = 0 while R ≤ 1, unphysical (NaN) above
+    dry = ~valid & (R_flat[pos] <= 1.0)
+    result[np.where(pos)[0][dry]] = 0.0
 
     result = result.reshape(orig_shape)
     return float(result.ravel()[0]) if scalar else result

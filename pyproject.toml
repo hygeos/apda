@@ -23,6 +23,7 @@ include = ["apda*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
@@ -35,9 +36,15 @@ scipy = "*"
 h5netcdf = "*"
 matplotlib-base = "*"
 pytest = "*"
+# validation / notebooks only (not runtime deps of apda)
+pandas = "*"
+ipykernel = "*"
+nbformat = "*"
+nbconvert-core = "*"
 
 [tool.pixi.pypi-dependencies]
 apda = { path = ".", editable = true }
 
 [tool.pixi.tasks]
 tests = "pytest tests/"
+validate = "python -m validation.run_all"

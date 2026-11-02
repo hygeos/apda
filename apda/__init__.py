@@ -11,7 +11,7 @@ from apda.bands import ChannelSet, select_channels
 from apda.conversion import convert_ratio_to_pw, fit_exponential
 from apda.lut import APDALUT
 from apda.ratio import compute_apda_ratio
-from apda.scene import retrieve_scene
+from apda.scene import retrieve, retrieve_scene, scene_geometry
 
 __all__ = [
     "APDA",
@@ -20,6 +20,8 @@ __all__ = [
     "compute_apda_ratio",
     "convert_ratio_to_pw",
     "fit_exponential",
+    "retrieve",
     "retrieve_scene",
+    "scene_geometry",
     "select_channels",
 ]
