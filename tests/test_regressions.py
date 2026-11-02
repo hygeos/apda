@@ -1,6 +1,11 @@
-"""Regression tests for the issues fixed after the v0.1 audit (tmp/apda_fix_plan.md).
+"""Regression tests for issues fixed after the v0.1 audit (all failed on ``b5bdff5``).
 
-All failed on ``b5bdff5`` (they were strict xfails there).
+1. NaN geometry was snapped to the first LUT node → now gives NaN.
+2. With a fitted ``c > 0``, ratios in ``(exp(-c), 1]`` (dry / noisy pixels)
+   gave NaN → now PW = 0.
+3. A failed refit kept the previous model; ``n_iter=0`` crashed with an
+   AttributeError → params cleared before fitting; clear ValueError.
+4. Out-of-range geometry and PW were clamped silently → clamped with a warning.
 """
 
 from __future__ import annotations

@@ -36,8 +36,7 @@ scipy = "*"
 h5netcdf = "*"
 matplotlib-base = "*"
 pytest = "*"
-# validation / notebooks only (not runtime deps of apda)
-pandas = "*"
+# notebooks only (not runtime deps of apda)
 ipykernel = "*"
 nbformat = "*"
 nbconvert-core = "*"
@@ -47,4 +46,3 @@ apda = { path = ".", editable = true }
 
 [tool.pixi.tasks]
 tests = "pytest tests/"
-validate = "python -m validation.run_all"

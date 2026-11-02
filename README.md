@@ -134,8 +134,49 @@ At 1100 nm, accuracy depends strongly on the surface (2.8% on Gobabeb, 31% on
 snow); at 910 nm, every surface stays within 2–9%. The data are simulated and
 noise-free.
 
+`examples/hyps_demo.py` reproduces the median figures, and
 `tests/test_integration_hyps.py` runs on this dataset when `APDA_LUT_PATH` and
-`APDA_TOA_PATH` are set.
+`APDA_TOA_PATH` are set. The per-surface figures, the `rho` table above, a LUT
+closure test and a comparison with the CORATHYP reference implementation
+(identical APDA ratios, comparable accuracy) come from internal validation
+tooling not included here.
+
+## Limitations
+
+- **Noise-free validation only.** Sensor noise and interband calibration
+  errors are not yet tested (the HYPS file provides models for both).
+- **Geometry between LUT nodes is interpolated linearly, but not validated.**
+  All HYPS configurations lie on the LUT's `sza`, `vza` and `aot` nodes, so
+  the interpolation error between nodes (e.g. `sza` 44° → 76°) is unknown.
+- **1100 nm is surface-dependent** (snow 31%, maize 20%). The error comes from
+  the surface's spectral shape across the band; changing `rho` does not fix
+  it. Prefer 910 nm.
+- **Outside the LUT range, inputs are clamped with a warning.** This applies to
+  geometry (e.g. `sza` < 22° or > 76°) and to the PW used to look up the path
+  reflectance above 6 g/cm². Below the first WV node (0.09 g/cm²), the path
+  reflectance is held at its 0.09 value and the ratio → PW model is
+  extrapolated: dry pixels are retrieved, with an unquantified error.
+- **The LUT must be at the sensor's bands.** Channels are matched by nearest
+  wavelength (0.01 µm tolerance), with no spectral-response convolution.
+
+## LUT improvements
+
+Suggested for the next LUT version, by expected impact:
+
+1. **A `WV = 0` node** (and ideally ~0.03 g/cm²). Below 0.09 g/cm², the path
+   reflectance in the measurement channels changes by 1–5% that apda cannot
+   see, and the model fit has no dry-end anchor. `WV = 0` is a trivial run.
+2. **Denser `sza`.** Three nodes (22, 44, 76°) leave 32° between the last two,
+   where airmass is most nonlinear. Before interpolation was added, snapping
+   `sza` 60° to the nearest node cost ~30% PW error, so the shape between
+   nodes matters. Nodes evenly spaced in airmass (1/cos `sza`), down to 0°,
+   would also remove the clamping below 22°.
+3. **More `vza` nodes** than 0 and 30° for off-nadir or wide-swath sensors,
+   with the coordinate stored increasing (currently `[30, 0]`).
+4. **`units` attributes on coordinates** (`sza` deg, `WV` g/cm², `wavelength`
+   µm), so apda can check them instead of assuming them.
+5. **For validation:** a few TOA simulations at off-node geometry (e.g. `sza`
+   33° and 60°, `vza` 15°) to measure the interpolation error directly.
 
 ## Reference
 
