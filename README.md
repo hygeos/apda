@@ -159,24 +159,6 @@ tooling not included here.
 - **The LUT must be at the sensor's bands.** Channels are matched by nearest
   wavelength (0.01 µm tolerance), with no spectral-response convolution.
 
-## LUT improvements
-
-Suggested for the next LUT version, by expected impact:
-
-1. **A `WV = 0` node** (and ideally ~0.03 g/cm²). Below 0.09 g/cm², the path
-   reflectance in the measurement channels changes by 1–5% that apda cannot
-   see, and the model fit has no dry-end anchor. `WV = 0` is a trivial run.
-2. **Denser `sza`.** Three nodes (22, 44, 76°) leave 32° between the last two,
-   where airmass is most nonlinear. Before interpolation was added, snapping
-   `sza` 60° to the nearest node cost ~30% PW error, so the shape between
-   nodes matters. Nodes evenly spaced in airmass (1/cos `sza`), down to 0°,
-   would also remove the clamping below 22°.
-3. **More `vza` nodes** than 0 and 30° for off-nadir or wide-swath sensors,
-   with the coordinate stored increasing (currently `[30, 0]`).
-4. **`units` attributes on coordinates** (`sza` deg, `WV` g/cm², `wavelength`
-   µm), so apda can check them instead of assuming them.
-5. **For validation:** a few TOA simulations at off-node geometry (e.g. `sza`
-   33° and 60°, `vza` 15°) to measure the interpolation error directly.
 
 ## Reference
 
